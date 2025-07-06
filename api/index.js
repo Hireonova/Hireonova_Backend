@@ -5,44 +5,45 @@ const mongoose = require('mongoose');
 const serverless = require('serverless-http');
 
 const app = express();
+
+// --- Middleware ---
 app.use(cors());
 app.use(express.json());
 
-// ✅ MongoDB Connection (handles cold start issues)
-let isConnected = false;
+// --- MongoDB Connection ---
+// This is a more robust approach for serverless environments.
+// Mongoose handles connection pooling internally. We don't need a manual `isConnected` flag.
+let conn = null;
+
 const connectToMongo = async () => {
-  if (isConnected) return;
+  // If a connection is already cached, reuse it.
+  if (conn) {
+    console.log("✅ Using cached MongoDB connection.");
+    return conn;
+  }
+
+  // If no connection is cached, create a new one.
   try {
-    const db = await mongoose.connect(process.env.MONGO_URI, {
+    console.log(" Mongoose is not connected. Attempting to establish a new connection...");
+    conn = await mongoose.connect(process.env.MONGO_URI, {
+      // These options are recommended for serverless to prevent timeout issues
+      serverSelectionTimeoutMS: 5000,
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
-    isConnected = db.connections[0].readyState === 1;
-    console.log("✅ MongoDB connected");
+    console.log("✅ New MongoDB connection established.");
+    return conn;
   } catch (err) {
     console.error("❌ MongoDB connection error:", err);
-    throw err;
+    // Ensure the function crashes if the database connection fails.
+    throw new Error("Failed to connect to MongoDB.");
   }
 };
 
-// ✅ Default route
-app.get('/', (req, res) => {
-  res.send('Hello World');
-});
-
-// ✅ Debug route for testing MongoDB connection on Vercel
-app.get('/api/debug', async (req, res) => {
-  try {
-    await connectToMongo();
-    res.json({ status: 'success', msg: 'MongoDB connected successfully' });
-  } catch (err) {
-    res.status(500).json({ status: 'error', msg: err.message });
-  }
-});
-
-// ✅ Resume Schema (allows dynamic keys)
+// --- Mongoose Schema and Model ---
+// Best practice to define this once.
 const resumeSchema = new mongoose.Schema({
-  email: { type: String, unique: true },
+  email: { type: String, unique: true, required: true },
   user_subscription: Number,
   ats_score: Number,
   Active_webpage: Number,
@@ -50,9 +51,10 @@ const resumeSchema = new mongoose.Schema({
   total_webpages_created: { type: Number, default: 0 },
 }, { strict: false });
 
+// This prevents Mongoose from redefining the model on every function invocation in a warm start.
 const Resume = mongoose.models.Resume || mongoose.model('Resume', resumeSchema);
 
-// ✅ Utility Functions
+// --- Utility Functions ---
 const deepEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const getMaxResumesByTier = (tier) => {
   if (tier === 2) return 10;
@@ -60,29 +62,37 @@ const getMaxResumesByTier = (tier) => {
   return 3;
 };
 
-// ✅ API: Hello
-app.get('/api/hello', async (req, res) => {
+// --- API Routes ---
+
+// Default Route
+app.get('/', (req, res) => {
+  res.send('Hello World');
+});
+
+// Debug Route
+app.get('/api/debug', async (req, res) => {
   try {
     await connectToMongo();
-    res.json({ msg: 'Hello from Express with MongoDB!' });
+    res.json({ status: 'success', msg: 'MongoDB connected successfully' });
   } catch (err) {
-    console.error('Mongo error:', err.message);
-    res.status(500).json({ error: 'MongoDB connection failed' });
+    res.status(500).json({ status: 'error', msg: err.message, details: err });
   }
 });
 
-// ✅ API: Upload Resume
+// Upload Resume
 app.post('/api/resume', async (req, res) => {
-  await connectToMongo();
-  const { email, ats_score, user_subscription, Active_webpage, resume } = req.body;
-  if (!email || !resume) return res.status(400).json({ error: 'Email and resume are required' });
-
   try {
+    await connectToMongo();
+    const { email, ats_score, user_subscription, Active_webpage, resume } = req.body;
+    if (!email || !resume) {
+      return res.status(400).json({ error: 'Email and resume data are required' });
+    }
+
     let user = await Resume.findOne({ email });
     const maxAllowed = getMaxResumesByTier(user_subscription);
 
     if (!user) {
-      user = new Resume({
+      const newUser = new Resume({
         email,
         user_subscription,
         ats_score,
@@ -91,86 +101,89 @@ app.post('/api/resume', async (req, res) => {
         total_webpages_created: 1,
         resume1: resume
       });
-      await user.save();
-      return res.json({ message: 'User created with resume1' });
+      await newUser.save();
+      return res.status(201).json({ message: 'User created and resume saved as resume1' });
     }
 
     const resumeKeys = Array.from({ length: maxAllowed }, (_, i) => `resume${i + 1}`);
-
-    for (let key of resumeKeys) {
-      if (user[key] && deepEqual(user[key], resume)) {
+    for (const key of resumeKeys) {
+      if (user.get(key) && deepEqual(user.get(key), resume)) {
         return res.status(409).json({ error: `This resume already exists as ${key}` });
       }
     }
 
-    const nextSlot = resumeKeys.find((key) => !user[key]);
+    const nextSlot = resumeKeys.find((key) => !user.get(key));
     if (!nextSlot) {
       return res.status(400).json({ error: `Maximum ${maxAllowed} resumes allowed for your plan.` });
     }
-
-    user[nextSlot] = resume;
+    
+    // Use Mongoose's .set() for dynamically adding fields
+    user.set(nextSlot, resume);
     user.ats_score = ats_score;
     user.Active_webpage = Active_webpage;
     user.user_subscription = user_subscription;
-    user.total_resumes_parsed += 1;
-    user.total_webpages_created += 1;
+    user.total_resumes_parsed = (user.total_resumes_parsed || 0) + 1;
+    user.total_webpages_created = (user.total_webpages_created || 0) + 1;
 
     await user.save();
     return res.json({ message: `New resume saved to ${nextSlot}` });
+
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Server error' });
+    console.error('Error in POST /api/resume:', err);
+    return res.status(500).json({ error: 'Server error', details: err.message });
   }
 });
 
-// ✅ API: Get Resumes
+// Get a User's Resumes
 app.get('/api/resume', async (req, res) => {
-  await connectToMongo();
-  const { email } = req.query;
-  if (!email) return res.status(400).json({ error: 'Email is required' });
-
   try {
+    await connectToMongo();
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
     const user = await Resume.findOne({ email });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
     return res.json(user);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error('Error in GET /api/resume:', err);
+    return res.status(500).json({ error: 'Server error', details: err.message });
   }
 });
 
-// ✅ API: Get HTML for specific resume key
+// Get HTML for a specific resume
 app.get('/api/html', async (req, res) => {
-  await connectToMongo();
-  const { email, resumeKey } = req.query;
-  if (!email || !resumeKey) {
-    return res.status(400).json({ error: 'Email and resumeKey required' });
-  }
-
   try {
-    const user = await Resume.findOne({ email });
-    if (!user || !user[resumeKey]) {
-      return res.status(404).json({ error: 'Resume not found' });
+    await connectToMongo();
+    const { email, resumeKey } = req.query;
+    if (!email || !resumeKey) {
+      return res.status(400).json({ error: 'Email and resumeKey are required' });
     }
 
-    const html = user[resumeKey]?.HTML || 'No HTML found';
+    const user = await Resume.findOne({ email });
+    if (!user || !user.get(resumeKey)) {
+      return res.status(404).json({ error: 'Resume not found' });
+    }
+    
+    const html = user.get(resumeKey)?.HTML || 'No HTML found for this resume.';
     return res.json({ email, resumeKey, HTML: html });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error('Error in GET /api/html:', err);
+    return res.status(500).json({ error: 'Server error', details: err.message });
   }
 });
 
-// ✅ API: Dashboard summary
+// Get Dashboard Summary
 app.get('/api/dashboard', async (req, res) => {
-  await connectToMongo();
-  const { email } = req.query;
-  if (!email) return res.status(400).json({ error: 'Email is required' });
-
   try {
-    const user = await Resume.findOne({ email });
+    await connectToMongo();
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    const user = await Resume.findOne({ email }).lean(); // Use .lean() for read-only operations
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const resumeCount = Object.keys(user.toObject()).filter(k => k.startsWith('resume') && user[k]).length;
+    const resumeCount = Object.keys(user).filter(k => k.startsWith('resume')).length;
 
     return res.json({
       ats_score: user.ats_score,
@@ -181,18 +194,26 @@ app.get('/api/dashboard', async (req, res) => {
       total_webpages_created: user.total_webpages_created
     });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error('Error in GET /api/dashboard:', err);
+    return res.status(500).json({ error: 'Server error', details: err.message });
   }
 });
 
-// ✅ Export for serverless platforms like Vercel
+// --- Serverless Handler and Local Development ---
+
+// Export for serverless platforms
 module.exports.handler = serverless(app);
 
-// ✅ Local development (only runs when using `node index.js`)
+// Local development server
 if (require.main === module) {
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, async () => {
-    await connectToMongo();
-    console.log(`🚀 Server running locally at http://localhost:${PORT}`);
+    try {
+      await connectToMongo();
+      console.log(`🚀 Server running locally at http://localhost:${PORT}`);
+    } catch (err) {
+      console.error("🚫 Failed to start local server:", err);
+      process.exit(1);
+    }
   });
 }
