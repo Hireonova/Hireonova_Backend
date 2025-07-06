@@ -1,20 +1,25 @@
-require('dotenv').config(); // import .env
 const express = require('express');
-const cors = require('cors');
+const serverless = require('serverless-http');
 const mongoose = require('mongoose');
+require('dotenv').config();
 
 const app = express();
-app.use(cors());
 app.use(express.json());
+app.use(require('cors')());
 
-// 🔐 Mongo URI from .env
-mongoose.connect(process.env.MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-}).then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error("❌ MongoDB connection error:", err));
+// Cache mongoose connection
+let conn = null;
+const connectToMongo = async () => {
+  if (!conn) {
+    conn = await mongoose.connect(process.env.MONGO_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+  }
+  return conn;
+};
 
-// Schema allows dynamic resume keys
+// Schema
 const resumeSchema = new mongoose.Schema({
   email: { type: String, unique: true },
   user_subscription: Number,
@@ -24,32 +29,37 @@ const resumeSchema = new mongoose.Schema({
   total_webpages_created: { type: Number, default: 0 },
 }, { strict: false });
 
-const Resume = mongoose.model('Resume', resumeSchema);
-
-const deepEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const getMaxResumesByTier = (tier) => {
-  if (tier === 2) return 10;
-  if (tier === 3) return 50;
-  return 3;
+let Resume; // lazy model
+const getModel = async () => {
+  await connectToMongo();
+  Resume = Resume || mongoose.model('Resume', resumeSchema);
+  return Resume;
 };
 
+const deepEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const getMaxResumesByTier = (tier) => tier === 3 ? 50 : tier === 2 ? 10 : 3;
+
+// GET /api/hello
 app.get('/api/hello', async (req, res) => {
   try {
     await connectToMongo();
-    res.json({ msg: 'Hello from Express with MongoDB!' });
+    res.json({ msg: 'Hello from Express with MongoDB on Vercel!' });
   } catch (err) {
     console.error('Mongo error:', err.message);
     res.status(500).json({ error: 'MongoDB connection failed' });
   }
 });
-// POST: Upload a resume
+
+// POST /api/resume
 app.post('/api/resume', async (req, res) => {
   const { email, ats_score, user_subscription, Active_webpage, resume } = req.body;
   if (!email || !resume) return res.status(400).json({ error: 'Email and resume are required' });
 
   try {
+    const Resume = await getModel();
     let user = await Resume.findOne({ email });
     const maxAllowed = getMaxResumesByTier(user_subscription);
+    const resumeKeys = Array.from({ length: maxAllowed }, (_, i) => `resume${i + 1}`);
 
     if (!user) {
       user = new Resume({
@@ -64,8 +74,6 @@ app.post('/api/resume', async (req, res) => {
       await user.save();
       return res.json({ message: 'User created with resume1' });
     }
-
-    const resumeKeys = Array.from({ length: maxAllowed }, (_, i) => `resume${i + 1}`);
 
     for (let key of resumeKeys) {
       if (user[key] && deepEqual(user[key], resume)) {
@@ -93,22 +101,22 @@ app.post('/api/resume', async (req, res) => {
   }
 });
 
-// GET: Get all resume data for a user
+// GET /api/resume
 app.get('/api/resume', async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ error: 'Email is required' });
 
   try {
+    const Resume = await getModel();
     const user = await Resume.findOne({ email });
     if (!user) return res.status(404).json({ error: 'User not found' });
-
     return res.json(user);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-// ✅ FIXED: GET HTML from a specific resume slot
+// GET /api/html
 app.get('/api/html', async (req, res) => {
   const { email, resumeKey } = req.query;
   if (!email || !resumeKey) {
@@ -116,6 +124,7 @@ app.get('/api/html', async (req, res) => {
   }
 
   try {
+    const Resume = await getModel();
     const user = await Resume.findOne({ email });
     if (!user || !user[resumeKey]) {
       return res.status(404).json({ error: 'Resume not found' });
@@ -128,12 +137,13 @@ app.get('/api/html', async (req, res) => {
   }
 });
 
-// GET: Dashboard summary
+// GET /api/dashboard
 app.get('/api/dashboard', async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ error: 'Email is required' });
 
   try {
+    const Resume = await getModel();
     const user = await Resume.findOne({ email });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -152,7 +162,5 @@ app.get('/api/dashboard', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-});
+// Export serverless handler
+module.exports = require('serverless-http')(app);
