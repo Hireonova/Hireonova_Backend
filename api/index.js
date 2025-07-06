@@ -33,6 +33,15 @@ const getMaxResumesByTier = (tier) => {
   return 3;
 };
 
+app.get('/api/hello', async (req, res) => {
+  try {
+    await connectToMongo();
+    res.json({ msg: 'Hello from Express with MongoDB!' });
+  } catch (err) {
+    console.error('Mongo error:', err.message);
+    res.status(500).json({ error: 'MongoDB connection failed' });
+  }
+});
 // POST: Upload a resume
 app.post('/api/resume', async (req, res) => {
   const { email, ats_score, user_subscription, Active_webpage, resume } = req.body;
