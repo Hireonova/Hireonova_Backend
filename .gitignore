@@ -1,2 +1,34 @@
-.env
+# Node.js
 node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Dependency directories
+jspm_packages/
+
+# .env file to keep sensitive data secure
+.env
+
+# Vercel config
+.vercel/
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# IDE / Editor directories
+.vscode/
+.idea/
+
+# Build output
+dist/
+build/
+
+# Coverage directory for testing
+coverage/
+
+# Temporary files
+*.swp
