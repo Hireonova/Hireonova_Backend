@@ -1,24 +1,31 @@
-const express = require('express');
-const serverless = require('serverless-http');
-const mongoose = require('mongoose');
 require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const mongoose = require('mongoose');
+const serverless = require('serverless-http');
 
 const app = express();
+app.use(cors());
 app.use(express.json());
-app.use(require('cors')());
 
+// MongoDB connection control for serverless compatibility
 let isConnected = false;
-
 const connectToMongo = async () => {
-  if (!isConnected) {
-    await mongoose.connect(process.env.MONGO_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    isConnected = true;
-  }
+  if (isConnected) return;
+  await mongoose.connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  });
+  isConnected = true;
+  console.log('✅ MongoDB connected (serverless/local)');
 };
 
+// Default route for root access
+app.get('/', (req, res) => {
+  res.send('Hello World');
+});
+
+// Schema definition with dynamic fields
 const resumeSchema = new mongoose.Schema({
   email: { type: String, unique: true },
   user_subscription: Number,
@@ -31,28 +38,36 @@ const resumeSchema = new mongoose.Schema({
 const Resume = mongoose.models.Resume || mongoose.model('Resume', resumeSchema);
 
 const deepEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const getMaxResumesByTier = (tier) => tier === 3 ? 50 : tier === 2 ? 10 : 3;
 
+const getMaxResumesByTier = (tier) => {
+  if (tier === 2) return 10;
+  if (tier === 3) return 50;
+  return 3;
+};
+
+// Health check endpoint
 app.get('/api/hello', async (req, res) => {
   try {
     await connectToMongo();
-    res.json({ msg: 'Hello from Express with MongoDB on Vercel!' });
+    res.json({ msg: 'Hello from Express with MongoDB!' });
   } catch (err) {
     console.error('Mongo error:', err.message);
     res.status(500).json({ error: 'MongoDB connection failed' });
   }
 });
 
+// Upload resume endpoint
 app.post('/api/resume', async (req, res) => {
+  await connectToMongo();
+  const { email, ats_score, user_subscription, Active_webpage, resume } = req.body;
+
+  if (!email || !resume) {
+    return res.status(400).json({ error: 'Email and resume are required' });
+  }
+
   try {
-    await connectToMongo();
-
-    const { email, ats_score, user_subscription, Active_webpage, resume } = req.body;
-    if (!email || !resume) return res.status(400).json({ error: 'Email and resume are required' });
-
     let user = await Resume.findOne({ email });
     const maxAllowed = getMaxResumesByTier(user_subscription);
-    const resumeKeys = Array.from({ length: maxAllowed }, (_, i) => `resume${i + 1}`);
 
     if (!user) {
       user = new Resume({
@@ -68,7 +83,9 @@ app.post('/api/resume', async (req, res) => {
       return res.json({ message: 'User created with resume1' });
     }
 
-    for (let key of resumeKeys) {
+    const resumeKeys = Array.from({ length: maxAllowed }, (_, i) => `resume${i + 1}`);
+
+    for (const key of resumeKeys) {
       if (user[key] && deepEqual(user[key], resume)) {
         return res.status(409).json({ error: `This resume already exists as ${key}` });
       }
@@ -88,38 +105,40 @@ app.post('/api/resume', async (req, res) => {
 
     await user.save();
     return res.json({ message: `New resume saved to ${nextSlot}` });
-
   } catch (err) {
-    console.error('Server Error:', err.message);
-    return res.status(500).json({ error: 'Internal server error' });
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
   }
 });
 
+// Retrieve all resume data for a user
 app.get('/api/resume', async (req, res) => {
+  await connectToMongo();
+  const { email } = req.query;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
   try {
-    await connectToMongo();
-
-    const { email } = req.query;
-    if (!email) return res.status(400).json({ error: 'Email is required' });
-
     const user = await Resume.findOne({ email });
     if (!user) return res.status(404).json({ error: 'User not found' });
-
     return res.json(user);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
+// Retrieve HTML from a specific resume key
 app.get('/api/html', async (req, res) => {
+  await connectToMongo();
+  const { email, resumeKey } = req.query;
+
+  if (!email || !resumeKey) {
+    return res.status(400).json({ error: 'Email and resumeKey required' });
+  }
+
   try {
-    await connectToMongo();
-
-    const { email, resumeKey } = req.query;
-    if (!email || !resumeKey) {
-      return res.status(400).json({ error: 'Email and resumeKey required' });
-    }
-
     const user = await Resume.findOne({ email });
     if (!user || !user[resumeKey]) {
       return res.status(404).json({ error: 'Resume not found' });
@@ -127,19 +146,21 @@ app.get('/api/html', async (req, res) => {
 
     const html = user[resumeKey]?.HTML || 'No HTML found';
     return res.json({ email, resumeKey, HTML: html });
-
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
+// Dashboard summary route
 app.get('/api/dashboard', async (req, res) => {
+  await connectToMongo();
+  const { email } = req.query;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
   try {
-    await connectToMongo();
-
-    const { email } = req.query;
-    if (!email) return res.status(400).json({ error: 'Email is required' });
-
     const user = await Resume.findOne({ email });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -153,10 +174,19 @@ app.get('/api/dashboard', async (req, res) => {
       total_resumes_parsed: user.total_resumes_parsed,
       total_webpages_created: user.total_webpages_created
     });
-
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-module.exports = serverless(app);
+// Export handler for serverless platforms
+module.exports.handler = serverless(app);
+
+// Local development server (only runs when executed directly)
+if (require.main === module) {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, async () => {
+    await connectToMongo();
+    console.log(`🚀 Server running locally at http://localhost:${PORT}`);
+  });
+}
