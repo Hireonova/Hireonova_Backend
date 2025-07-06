@@ -8,24 +8,39 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Connect MongoDB (only once)
+// ✅ MongoDB Connection (handles cold start issues)
 let isConnected = false;
 const connectToMongo = async () => {
   if (isConnected) return;
-  await mongoose.connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  });
-  isConnected = true;
-  console.log("✅ MongoDB connected (serverless)");
+  try {
+    const db = await mongoose.connect(process.env.MONGO_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    isConnected = db.connections[0].readyState === 1;
+    console.log("✅ MongoDB connected");
+  } catch (err) {
+    console.error("❌ MongoDB connection error:", err);
+    throw err;
+  }
 };
 
-// Default homepage
+// ✅ Default route
 app.get('/', (req, res) => {
   res.send('Hello World');
 });
 
-// Mongoose schema
+// ✅ Debug route for testing MongoDB connection on Vercel
+app.get('/api/debug', async (req, res) => {
+  try {
+    await connectToMongo();
+    res.json({ status: 'success', msg: 'MongoDB connected successfully' });
+  } catch (err) {
+    res.status(500).json({ status: 'error', msg: err.message });
+  }
+});
+
+// ✅ Resume Schema (allows dynamic keys)
 const resumeSchema = new mongoose.Schema({
   email: { type: String, unique: true },
   user_subscription: Number,
@@ -37,7 +52,7 @@ const resumeSchema = new mongoose.Schema({
 
 const Resume = mongoose.models.Resume || mongoose.model('Resume', resumeSchema);
 
-// Utility functions
+// ✅ Utility Functions
 const deepEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const getMaxResumesByTier = (tier) => {
   if (tier === 2) return 10;
@@ -45,7 +60,7 @@ const getMaxResumesByTier = (tier) => {
   return 3;
 };
 
-// Sample hello route
+// ✅ API: Hello
 app.get('/api/hello', async (req, res) => {
   try {
     await connectToMongo();
@@ -56,7 +71,7 @@ app.get('/api/hello', async (req, res) => {
   }
 });
 
-// POST: Save a resume
+// ✅ API: Upload Resume
 app.post('/api/resume', async (req, res) => {
   await connectToMongo();
   const { email, ats_score, user_subscription, Active_webpage, resume } = req.body;
@@ -108,7 +123,7 @@ app.post('/api/resume', async (req, res) => {
   }
 });
 
-// GET: Fetch resume info
+// ✅ API: Get Resumes
 app.get('/api/resume', async (req, res) => {
   await connectToMongo();
   const { email } = req.query;
@@ -124,7 +139,7 @@ app.get('/api/resume', async (req, res) => {
   }
 });
 
-// GET: Extract HTML from resume key
+// ✅ API: Get HTML for specific resume key
 app.get('/api/html', async (req, res) => {
   await connectToMongo();
   const { email, resumeKey } = req.query;
@@ -145,7 +160,7 @@ app.get('/api/html', async (req, res) => {
   }
 });
 
-// GET: Dashboard summary
+// ✅ API: Dashboard summary
 app.get('/api/dashboard', async (req, res) => {
   await connectToMongo();
   const { email } = req.query;
@@ -170,10 +185,10 @@ app.get('/api/dashboard', async (req, res) => {
   }
 });
 
-// ✅ Serverless export
+// ✅ Export for serverless platforms like Vercel
 module.exports.handler = serverless(app);
 
-// ✅ Local dev support
+// ✅ Local development (only runs when using `node index.js`)
 if (require.main === module) {
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, async () => {
