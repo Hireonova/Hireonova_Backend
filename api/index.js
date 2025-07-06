@@ -7,19 +7,18 @@ const app = express();
 app.use(express.json());
 app.use(require('cors')());
 
-// Cache mongoose connection
-let conn = null;
+let isConnected = false;
+
 const connectToMongo = async () => {
-  if (!conn) {
-    conn = await mongoose.connect(process.env.MONGO_URI, {
+  if (!isConnected) {
+    await mongoose.connect(process.env.MONGO_URI, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
+    isConnected = true;
   }
-  return conn;
 };
 
-// Schema
 const resumeSchema = new mongoose.Schema({
   email: { type: String, unique: true },
   user_subscription: Number,
@@ -29,17 +28,11 @@ const resumeSchema = new mongoose.Schema({
   total_webpages_created: { type: Number, default: 0 },
 }, { strict: false });
 
-let Resume; // lazy model
-const getModel = async () => {
-  await connectToMongo();
-  Resume = Resume || mongoose.model('Resume', resumeSchema);
-  return Resume;
-};
+const Resume = mongoose.models.Resume || mongoose.model('Resume', resumeSchema);
 
 const deepEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const getMaxResumesByTier = (tier) => tier === 3 ? 50 : tier === 2 ? 10 : 3;
 
-// GET /api/hello
 app.get('/api/hello', async (req, res) => {
   try {
     await connectToMongo();
@@ -50,13 +43,13 @@ app.get('/api/hello', async (req, res) => {
   }
 });
 
-// POST /api/resume
 app.post('/api/resume', async (req, res) => {
-  const { email, ats_score, user_subscription, Active_webpage, resume } = req.body;
-  if (!email || !resume) return res.status(400).json({ error: 'Email and resume are required' });
-
   try {
-    const Resume = await getModel();
+    await connectToMongo();
+
+    const { email, ats_score, user_subscription, Active_webpage, resume } = req.body;
+    if (!email || !resume) return res.status(400).json({ error: 'Email and resume are required' });
+
     let user = await Resume.findOne({ email });
     const maxAllowed = getMaxResumesByTier(user_subscription);
     const resumeKeys = Array.from({ length: maxAllowed }, (_, i) => `resume${i + 1}`);
@@ -95,36 +88,38 @@ app.post('/api/resume', async (req, res) => {
 
     await user.save();
     return res.json({ message: `New resume saved to ${nextSlot}` });
+
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Server error' });
+    console.error('Server Error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// GET /api/resume
 app.get('/api/resume', async (req, res) => {
-  const { email } = req.query;
-  if (!email) return res.status(400).json({ error: 'Email is required' });
-
   try {
-    const Resume = await getModel();
+    await connectToMongo();
+
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
     const user = await Resume.findOne({ email });
     if (!user) return res.status(404).json({ error: 'User not found' });
+
     return res.json(user);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/html
 app.get('/api/html', async (req, res) => {
-  const { email, resumeKey } = req.query;
-  if (!email || !resumeKey) {
-    return res.status(400).json({ error: 'Email and resumeKey required' });
-  }
-
   try {
-    const Resume = await getModel();
+    await connectToMongo();
+
+    const { email, resumeKey } = req.query;
+    if (!email || !resumeKey) {
+      return res.status(400).json({ error: 'Email and resumeKey required' });
+    }
+
     const user = await Resume.findOne({ email });
     if (!user || !user[resumeKey]) {
       return res.status(404).json({ error: 'Resume not found' });
@@ -132,18 +127,19 @@ app.get('/api/html', async (req, res) => {
 
     const html = user[resumeKey]?.HTML || 'No HTML found';
     return res.json({ email, resumeKey, HTML: html });
+
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/dashboard
 app.get('/api/dashboard', async (req, res) => {
-  const { email } = req.query;
-  if (!email) return res.status(400).json({ error: 'Email is required' });
-
   try {
-    const Resume = await getModel();
+    await connectToMongo();
+
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
     const user = await Resume.findOne({ email });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -157,10 +153,10 @@ app.get('/api/dashboard', async (req, res) => {
       total_resumes_parsed: user.total_resumes_parsed,
       total_webpages_created: user.total_webpages_created
     });
+
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-// Export serverless handler
-module.exports = require('serverless-http')(app);
+module.exports = serverless(app);
