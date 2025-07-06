@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MongoDB connection control for serverless compatibility
+// Connect MongoDB (only once)
 let isConnected = false;
 const connectToMongo = async () => {
   if (isConnected) return;
@@ -17,15 +17,15 @@ const connectToMongo = async () => {
     useUnifiedTopology: true,
   });
   isConnected = true;
-  console.log('✅ MongoDB connected (serverless/local)');
+  console.log("✅ MongoDB connected (serverless)");
 };
 
-// Default route for root access
+// Default homepage
 app.get('/', (req, res) => {
   res.send('Hello World');
 });
 
-// Schema definition with dynamic fields
+// Mongoose schema
 const resumeSchema = new mongoose.Schema({
   email: { type: String, unique: true },
   user_subscription: Number,
@@ -37,15 +37,15 @@ const resumeSchema = new mongoose.Schema({
 
 const Resume = mongoose.models.Resume || mongoose.model('Resume', resumeSchema);
 
+// Utility functions
 const deepEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-
 const getMaxResumesByTier = (tier) => {
   if (tier === 2) return 10;
   if (tier === 3) return 50;
   return 3;
 };
 
-// Health check endpoint
+// Sample hello route
 app.get('/api/hello', async (req, res) => {
   try {
     await connectToMongo();
@@ -56,14 +56,11 @@ app.get('/api/hello', async (req, res) => {
   }
 });
 
-// Upload resume endpoint
+// POST: Save a resume
 app.post('/api/resume', async (req, res) => {
   await connectToMongo();
   const { email, ats_score, user_subscription, Active_webpage, resume } = req.body;
-
-  if (!email || !resume) {
-    return res.status(400).json({ error: 'Email and resume are required' });
-  }
+  if (!email || !resume) return res.status(400).json({ error: 'Email and resume are required' });
 
   try {
     let user = await Resume.findOne({ email });
@@ -85,7 +82,7 @@ app.post('/api/resume', async (req, res) => {
 
     const resumeKeys = Array.from({ length: maxAllowed }, (_, i) => `resume${i + 1}`);
 
-    for (const key of resumeKeys) {
+    for (let key of resumeKeys) {
       if (user[key] && deepEqual(user[key], resume)) {
         return res.status(409).json({ error: `This resume already exists as ${key}` });
       }
@@ -111,29 +108,26 @@ app.post('/api/resume', async (req, res) => {
   }
 });
 
-// Retrieve all resume data for a user
+// GET: Fetch resume info
 app.get('/api/resume', async (req, res) => {
   await connectToMongo();
   const { email } = req.query;
-
-  if (!email) {
-    return res.status(400).json({ error: 'Email is required' });
-  }
+  if (!email) return res.status(400).json({ error: 'Email is required' });
 
   try {
     const user = await Resume.findOne({ email });
     if (!user) return res.status(404).json({ error: 'User not found' });
+
     return res.json(user);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-// Retrieve HTML from a specific resume key
+// GET: Extract HTML from resume key
 app.get('/api/html', async (req, res) => {
   await connectToMongo();
   const { email, resumeKey } = req.query;
-
   if (!email || !resumeKey) {
     return res.status(400).json({ error: 'Email and resumeKey required' });
   }
@@ -151,14 +145,11 @@ app.get('/api/html', async (req, res) => {
   }
 });
 
-// Dashboard summary route
+// GET: Dashboard summary
 app.get('/api/dashboard', async (req, res) => {
   await connectToMongo();
   const { email } = req.query;
-
-  if (!email) {
-    return res.status(400).json({ error: 'Email is required' });
-  }
+  if (!email) return res.status(400).json({ error: 'Email is required' });
 
   try {
     const user = await Resume.findOne({ email });
@@ -179,10 +170,10 @@ app.get('/api/dashboard', async (req, res) => {
   }
 });
 
-// Export handler for serverless platforms
+// ✅ Serverless export
 module.exports.handler = serverless(app);
 
-// Local development server (only runs when executed directly)
+// ✅ Local dev support
 if (require.main === module) {
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, async () => {
