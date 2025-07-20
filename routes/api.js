@@ -275,6 +275,33 @@ router.get('/likedjobsget', async (req, res) => {
         res.status(500).json({ error: 'Server error.', details: err.message });
     }
 });
+router.post('/dislikejob', async (req, res) => {
+    const { email, job_id } = req.body;
+
+    if (!email || !job_id) {
+        return res.status(400).json({ error: 'Email and job_id are required.' });
+    }
+
+    try {
+        const user = await Resume.findOne({ email });
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+
+        const initialCount = user.liked_job_ids.length;
+        user.liked_job_ids = user.liked_job_ids.filter(id => id !== job_id);
+
+        if (user.liked_job_ids.length === initialCount) {
+            return res.status(404).json({ error: 'Job ID not found in liked jobs.' });
+        }
+
+        await user.save();
+        res.status(200).json({
+            message: 'Job  removed from liked jobs.',
+            liked_job_ids: user.liked_job_ids
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Server error.', details: err.message });
+    }
+});
 
 
 module.exports = router;
