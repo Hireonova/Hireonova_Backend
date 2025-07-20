@@ -11,6 +11,13 @@ const resumeSchema = new mongoose.Schema({
   Active_webpage: Number,
   total_resumes_parsed: { type: Number, default: 0 },
   total_webpages_created: { type: Number, default: 0 },
+
+  // ✅ NEW FIELD: Store liked job IDs (as strings)
+  liked_job_ids: {
+    type: [String],
+    default: [],
+  }
+
 }, { strict: false });
 
 module.exports = mongoose.models.Resume || mongoose.model('Resume', resumeSchema);

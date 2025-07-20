@@ -140,7 +140,7 @@ router.get('/resume', async (req, res) => {
 
     try {
         const user = await Resume.findOne({ email }).lean();
-        if (!user) return res.status(404).json({ error: 'User not found.' });
+        if (!user) return res.status(404).json({ error: 'No resume found' });
 
         const maxAllowed = getMaxResumesByTier(user.user_subscription);
         const resumeKeys = Array.from({ length: maxAllowed }, (_, i) => `resume${i + 1}`);
@@ -231,5 +231,50 @@ router.put('/admin/subscription', async (req, res) => {
         res.status(500).json({ error: 'Server error.', details: err.message });
     }
 });
+router.post('/likedjob', async (req, res) => {
+    const { email, job_id } = req.body;
+    if (!email || !job_id) {
+        return res.status(400).json({ error: 'Email and job_id are required.' });
+    }
+
+    try {
+        const user = await Resume.findOne({ email });
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+
+        if (user.liked_job_ids.includes(job_id)) {
+            return res.status(409).json({ error: 'Job already liked.' });
+        }
+
+        user.liked_job_ids.push(job_id);
+        await user.save();
+
+        res.status(200).json({ message: 'Job ID saved to liked jobs.', liked_job_ids: user.liked_job_ids });
+    } catch (err) {
+        res.status(500).json({ error: 'Server error.', details: err.message });
+    }
+});
+router.get('/likedjobsget', async (req, res) => {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'Email is required.' });
+
+    try {
+        const user = await Resume.findOne({ email }).lean();
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+
+        const likedJobs = user.liked_job_ids || [];
+
+        if (likedJobs.length === 0) {
+            return res.status(200).json({ message: 'No jobs liked yet.' });
+        }
+
+        res.status(200).json({
+            total: likedJobs.length,
+            liked_job_ids: likedJobs
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Server error.', details: err.message });
+    }
+});
+
 
 module.exports = router;
